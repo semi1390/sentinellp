@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "exportedAt": "2026-06-28T12:00:00.000Z",
+  "workflow": {
+    "name": "SentinelLP Test",
+    "description": "Test rebalance workflow"
+  },
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "type": "trigger",
+        "label": "Agent Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": ""
+      }
+    },
+    {
+      "id": "step-decrease",
+      "type": "action",
+      "position": { "x": 400, "y": 0 },
+      "data": {
+        "type": "action",
+        "label": "Remove Liquidity",
+        "config": {
+          "actionType": "web3/write-contract",
+          "network": "11155111",
+          "contractAddress": "0x1238536071E1c677A632429e3655c799b22cDA52",
+          "abiFunction": "decreaseLiquidity",
+          "functionArgs": ["229656", "4063720687866", "0", "0", "1782999999"]
+        },
+        "status": "idle",
+        "description": ""
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "trigger-1",
+      "target": "step-decrease"
+    }
+  ],
+  "integrationBindings": []
+}

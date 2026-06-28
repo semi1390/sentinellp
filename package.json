@@ -1,0 +1,31 @@
+{
+  "name": "sentinellp",
+  "version": "0.1.0",
+  "description": "Autonomous Uniswap v3 LP position risk agent powered by KeeperHub onchain execution",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "agent": "ts-node src/agent/loop.ts",
+    "check": "ts-node src/scripts/healthcheck.ts",
+    "get-wallet": "ts-node src/scripts/get-wallet.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "winston": "^3.13.0",
+    "node-cron": "^3.0.3",
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0",
+    "@types/node-cron": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
