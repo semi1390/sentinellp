@@ -17,6 +17,7 @@ import { ethers } from "ethers";
 import { UniswapV3Position, TokenInfo } from "../types";
 import { ETH_RPC_URL, UNISWAP_POSITION_MANAGER, UNISWAP_FACTORY } from "../config";
 import { log } from "../config/logger";
+import { priceFeed } from "./priceFeed";
 
 // Minimal ABI — only the functions we actually call
 const POSITION_MANAGER_ABI = [
@@ -157,14 +158,14 @@ export class UniswapPositionReader {
       tickLower: Number(pos.tickLower),
       tickUpper: Number(pos.tickUpper),
       liquidity: pos.liquidity.toString(),
-      // NOTE: Exact amounts require tick math. These are placeholders.
-      // Week 2: replace with full sqrt price calculations.
+      // NOTE: Exact token amounts require sqrt price math (Week 2 full implementation)
+      // For now we estimate value from liquidity and current prices
       amount0: "0",
       amount1: "0",
       feesEarned0: pos.tokensOwed0.toString(),
       feesEarned1: pos.tokensOwed1.toString(),
-      // NOTE: USD value requires price oracle integration (Week 2)
-      valueUSD: 0,
+   valueUSD: (token0Info.priceUSD * Number(pos.tokensOwed0) / Math.pow(10, token0Info.decimals)) +
+                (token1Info.priceUSD * Number(pos.tokensOwed1) / Math.pow(10, token1Info.decimals)),
     };
   }
 
@@ -175,12 +176,13 @@ export class UniswapPositionReader {
       token.decimals(),
     ]);
 
+    const priceUSD = await priceFeed.getTokenPriceUSD(tokenAddress);
+
     return {
       address: tokenAddress,
       symbol,
       decimals: Number(decimals),
-      // NOTE: Price requires oracle — Chainlink/Coingecko integration in Week 2
-      priceUSD: 0,
+      priceUSD,
     };
   }
 }

@@ -20,7 +20,6 @@ import { KeeperHubClient } from "../keeperhub/client";
 import { AuditTrail } from "./auditTrail";
 import { WALLET_ADDRESS, POLL_INTERVAL_MINUTES } from "../config";
 import { log } from "../config/logger";
- import axios from "axios";
 
 const positionReader = new UniswapPositionReader();
 const healthAssessor = new HealthAssessor();
@@ -58,7 +57,7 @@ async function runCycle(): Promise<void> {
         position.fee
       );
 
-      const health = healthAssessor.assess(position, currentTick);
+      const health = await healthAssessor.assess(position, currentTick);
       audit.recordHealthAssessment(health);
 
       log.info(`Status: ${health.status}`, {
@@ -130,19 +129,10 @@ async function executeRebalance(
       });
     }
   } catch (err) {
-if (axios.isAxiosError(err)) {
-  log.error("Failed to submit rebalance to KeeperHub", {
-    error: err.message,
-    status: err.response?.status,
-    details: JSON.stringify(err.response?.data),
-    tokenId: position.tokenId,
-  });
-} else {
-  log.error("Failed to submit rebalance to KeeperHub", {
-    error: err instanceof Error ? err.message : String(err),
-    tokenId: position.tokenId,
-  });
-}
+    log.error("Failed to submit rebalance to KeeperHub", {
+      error: err instanceof Error ? err.message : String(err),
+      tokenId: position.tokenId,
+    });
   }
 }
 

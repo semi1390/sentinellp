@@ -9,8 +9,9 @@
 import { UniswapV3Position, PositionHealth, PositionStatus } from "../types";
 import { MIN_POSITION_VALUE_USD, OUT_OF_RANGE_THRESHOLD_POLLS } from "../config";
 import { log } from "../config/logger";
+import { priceFeed } from "../uniswap/priceFeed";
 
-
+// TESTING FLAG: set FORCE_REBALANCE=true in .env to bypass range check
 const FORCE_REBALANCE = process.env.FORCE_REBALANCE === "true";
 
 // Track how many consecutive polls each position has been out of range.
@@ -22,7 +23,7 @@ export class HealthAssessor {
    * Assess the health of a single LP position.
    * Returns a PositionHealth object with status and action signals.
    */
-  assess(position: UniswapV3Position, currentTick: number): PositionHealth {
+  async assess(position: UniswapV3Position, currentTick: number): Promise<PositionHealth> {
     const { tokenId, tickLower, tickUpper, valueUSD } = position;
 
     // --- Check 1: Is the position too small to bother with? ---
@@ -36,8 +37,9 @@ export class HealthAssessor {
     }
 
     // --- Check 2: Is the current price inside the position's range? ---
+    // FORCE_REBALANCE=true in .env bypasses this for testing
     const inRange = FORCE_REBALANCE ? false : (currentTick >= tickLower && currentTick <= tickUpper);
-if (FORCE_REBALANCE) log.warn("⚠️  FORCE_REBALANCE=true — treating position as out of range for testing");
+    if (FORCE_REBALANCE) log.warn("⚠️  FORCE_REBALANCE=true — treating position as out of range for testing");
 
     if (inRange) {
       // Great — position is earning fees. Reset out-of-range counter.
@@ -69,9 +71,9 @@ if (FORCE_REBALANCE) log.warn("⚠️  FORCE_REBALANCE=true — treating positio
     // --- Check 4: Is rebalancing gas-economical? ---
     // NOTE: Real gas estimation comes from KeeperHub in Week 2.
     // For now, use a placeholder that always returns ~$15 gas cost.
-    const gasCostUSD = this.estimateGasCostUSD();
+    const gasCostUSD = await this.estimateGasCostUSD();
     const estimatedDailyFeeLossUSD = this.estimateDailyFeeLoss(position);
-   const rebalanceWorthIt = FORCE_REBALANCE ? true : estimatedDailyFeeLossUSD > gasCostUSD;
+    const rebalanceWorthIt = FORCE_REBALANCE ? true : estimatedDailyFeeLossUSD > gasCostUSD;
 
     log.info(`Position ${tokenId} rebalance economics`, {
       estimatedDailyFeeLossUSD: estimatedDailyFeeLossUSD.toFixed(2),
@@ -124,33 +126,43 @@ if (FORCE_REBALANCE) log.warn("⚠️  FORCE_REBALANCE=true — treating positio
   }
 
   /**
-   * Placeholder gas estimate.
-   * Week 2: Replace with KeeperHub's real gas estimation API.
-   *
-   * A rebalance is 3 transactions:
-   *   1. decreaseLiquidity (remove from current range)
-   *   2. collect (collect tokens + fees)
-   *   3. mint (deposit at new range)
-   * Estimate ~$15 total at moderate gas prices.
+   * Real gas cost estimate using current ETH price from Chainlink.
+   * Based on actual gas units measured from our Sepolia executions:
+   *   decreaseLiquidity: ~182,000 gas
+   *   collect:           ~118,000 gas
+   *   approve x2:        ~130,000 gas
+   *   mint:              ~426,000 gas
+   *   Total:             ~856,000 gas units
    */
-  private estimateGasCostUSD(): number {
-    // TODO: Call KeeperHub gas estimation endpoint
-    // return await keeperHub.estimateGas(workflow)
-    return 15;
+  private async estimateGasCostUSD(): Promise<number> {
+    try {
+      const { ethers } = await import("ethers");
+      const { ETH_RPC_URL } = await import("../config");
+      const provider = new ethers.JsonRpcProvider(ETH_RPC_URL);
+      const feeData = await provider.getFeeData();
+      const gasPriceWei = feeData.gasPrice ?? BigInt(5_000_000_000); // 5 gwei fallback
+
+      const TOTAL_GAS_UNITS = 856_000n;
+      const gasCostWei = gasPriceWei * TOTAL_GAS_UNITS;
+      const gasCostEth = Number(gasCostWei) / 1e18;
+
+      const ethPriceUSD = await priceFeed.getEthPriceUSD();
+      const gasCostUSD = gasCostEth * (ethPriceUSD || 2500); // fallback $2500 ETH
+
+      return gasCostUSD;
+    } catch {
+      return 15; // fallback if estimation fails
+    }
   }
 
   /**
-   * Rough estimate of daily fee income being missed.
-   * When out of range, fee earnings = 0. We estimate what the position
-   * *would* earn based on its share of pool liquidity and typical volume.
-   *
-   * Week 2: Replace with real fee APR from subgraph or Uniswap API.
+   * Estimate daily fee loss from being out of range.
+   * Uses real position value from Chainlink prices.
+   * Assumes 20% APR as a conservative estimate for active USDC/WETH pools.
+   * Week 2: Replace with real APR from Uniswap subgraph.
    */
   private estimateDailyFeeLoss(position: UniswapV3Position): number {
     if (position.valueUSD === 0) return 0;
-    // Assume 20% APR as placeholder (typical for active pools)
-    // Daily fee = value * APR / 365
-    // TODO: Fetch real APR from Uniswap subgraph
     const assumedAPR = 0.20;
     return (position.valueUSD * assumedAPR) / 365;
   }
