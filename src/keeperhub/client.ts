@@ -13,6 +13,10 @@ const BASE_URL = "https://app.keeperhub.com/api";
 const UNISWAP_POSITION_MANAGER_SEPOLIA = "0x1238536071e1c677a632429e3655c799b22cda52";
 const UNISWAP_POSITION_MANAGER_MAINNET = "0xc36442b4a4522e871399cd717abdd847ab11fe88";
 
+const EXPLORER_BASE = TARGET_NETWORK === "1"
+  ? "https://etherscan.io"
+  : "https://sepolia.etherscan.io";
+
 const POSITION_MANAGER_ABI = JSON.stringify([{"inputs":[{"internalType":"address","name":"_factory","type":"address"},{"internalType":"address","name":"_WETH9","type":"address"},{"internalType":"address","name":"_tokenDescriptor_","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[{"components":[{"internalType":"uint256","name":"tokenId","type":"uint256"},{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint128","name":"amount0Max","type":"uint128"},{"internalType":"uint128","name":"amount1Max","type":"uint128"}],"internalType":"struct INonfungiblePositionManager.CollectParams","name":"params","type":"tuple"}],"name":"collect","outputs":[{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"},{"inputs":[{"components":[{"internalType":"uint256","name":"tokenId","type":"uint256"},{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"amount0Min","type":"uint256"},{"internalType":"uint256","name":"amount1Min","type":"uint256"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"internalType":"struct INonfungiblePositionManager.DecreaseLiquidityParams","name":"params","type":"tuple"}],"name":"decreaseLiquidity","outputs":[{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"},{"inputs":[{"components":[{"internalType":"address","name":"token0","type":"address"},{"internalType":"address","name":"token1","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint256","name":"amount0Desired","type":"uint256"},{"internalType":"uint256","name":"amount1Desired","type":"uint256"},{"internalType":"uint256","name":"amount0Min","type":"uint256"},{"internalType":"uint256","name":"amount1Min","type":"uint256"},{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"internalType":"struct INonfungiblePositionManager.MintParams","name":"params","type":"tuple"}],"name":"mint","outputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"},{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"}]);
 
 const ERC20_ABI = [
@@ -73,7 +77,16 @@ export class KeeperHubClient {
       if (status.status === "success") {
         const execLogs = await this.getExecutionLogs(executionId);
         const txHash = this.extractTxHash(execLogs);
-        log.info(`✅ Rebalance confirmed onchain`, { txHash });
+
+        if (txHash) {
+          log.info(`✅ Rebalance confirmed onchain`, { txHash });
+          log.info(`🔗 KeeperHub audit trail: https://app.keeperhub.com/workflows/executions/${executionId}`);
+          log.info(`🔗 Etherscan: ${EXPLORER_BASE}/tx/${txHash}`);
+        } else {
+          log.warn(`✅ Rebalance confirmed but tx hash not found in logs`);
+          log.debug(`Raw logs for debugging`, { execLogs: JSON.stringify(execLogs) });
+        }
+
         return {
           jobId: executionId,
           tokenId: "",
@@ -148,7 +161,6 @@ export class KeeperHubClient {
       ? UNISWAP_POSITION_MANAGER_MAINNET
       : UNISWAP_POSITION_MANAGER_SEPOLIA;
 
-    // Read actual wallet token balances for mint
     const provider = new ethers.JsonRpcProvider(process.env.ETH_RPC_URL);
     const token0Contract = new ethers.Contract(position.token0.address, ERC20_ABI, provider);
     const token1Contract = new ethers.Contract(position.token1.address, ERC20_ABI, provider);
@@ -162,14 +174,13 @@ export class KeeperHubClient {
       amount1: amount1Balance,
     });
 
-   // Snap ticks to fee tier tick spacing
-const tickSpacing = position.fee === 500 ? 10 : position.fee === 3000 ? 60 : 200;
-const snapDown = (tick: number) => Math.floor(tick / tickSpacing) * tickSpacing;
-const snapUp = (tick: number) => Math.ceil(tick / tickSpacing) * tickSpacing;
-const tickLower = snapDown(decision.proposedTickLower ?? 0);
-const tickUpper = snapUp(decision.proposedTickUpper ?? 0);
+    const tickSpacing = position.fee === 500 ? 10 : position.fee === 3000 ? 60 : 200;
+    const snapDown = (tick: number) => Math.floor(tick / tickSpacing) * tickSpacing;
+    const snapUp = (tick: number) => Math.ceil(tick / tickSpacing) * tickSpacing;
+    const tickLower = snapDown(decision.proposedTickLower ?? 0);
+    const tickUpper = snapUp(decision.proposedTickUpper ?? 0);
 
-const name = `SentinelLP Rebalance — Position #${tokenId} — ${new Date().toISOString()}`;
+    const name = `SentinelLP Rebalance — Position #${tokenId} — ${new Date().toISOString()}`;
     const description = `Agent decision: ${decision.reasoning}`;
 
     const nodes = [
@@ -233,40 +244,40 @@ const name = `SentinelLP Rebalance — Position #${tokenId} — ${new Date().toI
           description: "",
         },
       },
-{
-  id: "step-approve0",
-  type: "action",
-  data: {
-    label: "Approve Token0 (USDC)",
-    type: "action",
-    config: {
-      actionType: "web3/approve-token",
-      network,
-      tokenConfig: position.token0.address,
-      spenderAddress: positionManager,
-      amount: amount0Balance,
-    },
-    status: "idle",
-    description: "",
-  },
-},
-{
-  id: "step-approve1",
-  type: "action",
-  data: {
-    label: "Approve Token1 (WETH)",
-    type: "action",
-    config: {
-      actionType: "web3/approve-token",
-      network,
-      tokenConfig: position.token1.address,
-      spenderAddress: positionManager,
-      amount: amount1Balance,
-    },
-    status: "idle",
-    description: "",
-  },
-},
+      {
+        id: "step-approve0",
+        type: "action",
+        data: {
+          label: "Approve Token0 (USDC)",
+          type: "action",
+          config: {
+            actionType: "web3/approve-token",
+            network,
+            tokenConfig: position.token0.address,
+            spenderAddress: positionManager,
+            amount: amount0Balance,
+          },
+          status: "idle",
+          description: "",
+        },
+      },
+      {
+        id: "step-approve1",
+        type: "action",
+        data: {
+          label: "Approve Token1 (WETH)",
+          type: "action",
+          config: {
+            actionType: "web3/approve-token",
+            network,
+            tokenConfig: position.token1.address,
+            spenderAddress: positionManager,
+            amount: amount1Balance,
+          },
+          status: "idle",
+          description: "",
+        },
+      },
       {
         id: "step-mint",
         type: "action",
@@ -283,8 +294,8 @@ const name = `SentinelLP Rebalance — Position #${tokenId} — ${new Date().toI
               token0: position.token0.address,
               token1: position.token1.address,
               fee: String(position.fee),
-            tickLower: String(tickLower),
-tickUpper: String(tickUpper),
+              tickLower: String(tickLower),
+              tickUpper: String(tickUpper),
               amount0Desired: amount0Balance,
               amount1Desired: amount1Balance,
               amount0Min: "0",
@@ -303,9 +314,9 @@ tickUpper: String(tickUpper),
     const edges = [
       { id: "e1", source: "trigger-1", target: "step-decrease" },
       { id: "e2", source: "step-decrease", target: "step-collect" },
-     { id: "e3", source: "step-collect", target: "step-approve0" },
-{ id: "e4", source: "step-approve0", target: "step-approve1" },
-{ id: "e5", source: "step-approve1", target: "step-mint" },
+      { id: "e3", source: "step-collect", target: "step-approve0" },
+      { id: "e4", source: "step-approve0", target: "step-approve1" },
+      { id: "e5", source: "step-approve1", target: "step-mint" },
     ];
 
     const createRes = await this.http.post("/workflows/create", {
@@ -329,7 +340,13 @@ tickUpper: String(tickUpper),
     logs: Array<{ output: Record<string, unknown> }>
   ): string | undefined {
     for (const entry of logs) {
-      if (entry.output?.transactionHash) return entry.output.transactionHash as string;
+ log.debug(`Checking log entry`, {
+  outputKeys: Object.keys(entry.output ?? {}),
+});
+
+      if (entry.output?.transactionHash) {
+        return entry.output.transactionHash as string;
+      }
       if (entry.output?.transactionLink) {
         const link = entry.output.transactionLink as string;
         const match = link.match(/0x[a-fA-F0-9]{64}/);
