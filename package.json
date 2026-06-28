@@ -9,7 +9,8 @@
     "dev": "ts-node src/index.ts",
     "agent": "ts-node src/agent/loop.ts",
     "check": "ts-node src/scripts/healthcheck.ts",
-    "get-wallet": "ts-node src/scripts/get-wallet.ts"
+    "get-wallet": "ts-node src/scripts/get-wallet.ts",
+    "audit": "ts-node src/scripts/audit.ts"
   },
   "dependencies": {
     "ethers": "^6.13.0",
