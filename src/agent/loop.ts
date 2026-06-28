@@ -1,15 +1,9 @@
 // ============================================================
 // SentinelLP — Main Agent Loop
 //
-// This is the top-level orchestrator. It:
-//   1. Fetches all LP positions for the wallet
-//   2. Assesses health of each position
-//   3. Asks Claude to decide what action to take
-//   4. Submits execution to KeeperHub if action is needed
-//   5. Waits for confirmation and records audit trail
-//   6. Sleeps until next poll
-//
-// Run with: npm run agent
+// Monitors ALL wallets registered in the SentinelLPOperator contract.
+// For each wallet, checks all Uniswap v3 positions and rebalances
+// through KeeperHub if needed.
 // ============================================================
 
 import cron from "node-cron";
@@ -18,8 +12,10 @@ import { HealthAssessor } from "./healthAssessor";
 import { AgentBrain } from "./brain";
 import { KeeperHubClient } from "../keeperhub/client";
 import { AuditTrail } from "./auditTrail";
+import { operatorReader } from "../contract/operatorReader";
 import { WALLET_ADDRESS, POLL_INTERVAL_MINUTES } from "../config";
 import { log } from "../config/logger";
+import axios from "axios";
 
 const positionReader = new UniswapPositionReader();
 const healthAssessor = new HealthAssessor();
@@ -32,68 +28,83 @@ const audit = new AuditTrail();
 async function runCycle(): Promise<void> {
   log.info("═══════════════════════════════════════");
   log.info("SentinelLP — Starting monitoring cycle");
-  log.info(`Wallet: ${WALLET_ADDRESS}`);
   log.info(`Time: ${new Date().toISOString()}`);
   log.info("═══════════════════════════════════════");
 
   try {
-    // Step 1: Fetch all LP positions
-    const positions = await positionReader.getPositions(WALLET_ADDRESS);
+    // Get all registered users from the contract
+    const registeredUsers = await operatorReader.getActiveUsers();
 
-    audit.recordScan(WALLET_ADDRESS, positions.length);
+    // Fall back to the hardcoded WALLET_ADDRESS if no users registered yet
+    // This lets us keep testing without needing to register first
+    const walletsToMonitor = registeredUsers.length > 0
+      ? registeredUsers.map((u) => u.address)
+      : [WALLET_ADDRESS];
 
-    if (positions.length === 0) {
-      log.info("No active LP positions to monitor. Sleeping until next poll.");
-      return;
+    if (registeredUsers.length === 0) {
+      log.info(`No registered users yet — monitoring default wallet: ${WALLET_ADDRESS}`);
+    } else {
+      log.info(`Monitoring ${walletsToMonitor.length} registered wallet(s)`);
     }
 
-    // Step 2: Assess health of each position
-    for (const position of positions) {
-      log.info(`─── Checking position ${position.tokenId} (${position.token0.symbol}/${position.token1.symbol}) ───`);
-
-      const currentTick = await positionReader.getCurrentTick(
-        position.token0.address,
-        position.token1.address,
-        position.fee
-      );
-
-      const health = await healthAssessor.assess(position, currentTick);
-      audit.recordHealthAssessment(health);
-
-      log.info(`Status: ${health.status}`, {
-        tokenId: position.tokenId,
-        currentTick,
-        tickLower: position.tickLower,
-        tickUpper: position.tickUpper,
-      });
-
-      // Step 3: Agent decides what to do
-      const decision = await brain.decide(position, health);
-      audit.recordDecision(decision);
-
-      log.info(`Decision: ${decision.action} (${decision.confidence} confidence)`, {
-        reasoning: decision.reasoning,
-      });
-
-      // Step 4: Execute via KeeperHub if action is needed
-      if (decision.action === "REBALANCE") {
-        await executeRebalance(position, decision);
-        healthAssessor.resetCounter(position.tokenId);
-      } else if (decision.action === "COLLECT_FEES") {
-        // TODO: Implement fee collection workflow in Week 2
-        log.info(`Fee collection not yet implemented — will add in Week 2`);
-      } else {
-        log.info(`No execution needed for ${decision.action}`);
-      }
+    // Monitor each wallet
+    for (const walletAddress of walletsToMonitor) {
+      await monitorWallet(walletAddress);
     }
 
     log.info("Cycle complete ✓");
   } catch (err) {
     log.error("Cycle failed with unhandled error", {
       error: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
     });
-    // Don't rethrow — let the agent keep running on next poll
+  }
+}
+
+async function monitorWallet(walletAddress: string): Promise<void> {
+  log.info(`--- Monitoring wallet: ${walletAddress} ---`);
+
+  const positions = await positionReader.getPositions(walletAddress);
+  audit.recordScan(walletAddress, positions.length);
+
+  if (positions.length === 0) {
+    log.info(`No active LP positions for ${walletAddress}`);
+    return;
+  }
+
+  for (const position of positions) {
+    log.info(`─── Checking position ${position.tokenId} (${position.token0.symbol}/${position.token1.symbol}) ───`);
+
+    const currentTick = await positionReader.getCurrentTick(
+      position.token0.address,
+      position.token1.address,
+      position.fee
+    );
+
+    const health = await healthAssessor.assess(position, currentTick);
+    audit.recordHealthAssessment(health);
+
+    log.info(`Status: ${health.status}`, {
+      tokenId: position.tokenId,
+      currentTick,
+      tickLower: position.tickLower,
+      tickUpper: position.tickUpper,
+    });
+
+    const decision = await brain.decide(position, health);
+    audit.recordDecision(decision);
+
+    log.info(`Decision: ${decision.action} (${decision.confidence} confidence)`, {
+      reasoning: decision.reasoning,
+    });
+
+    if (decision.action === "REBALANCE") {
+      await executeRebalance(position, decision);
+      healthAssessor.resetCounter(position.tokenId);
+    } else if (decision.action === "COLLECT_FEES") {
+      log.info(`Fee collection — coming soon`);
+    } else {
+      log.info(`No execution needed for ${decision.action}`);
+    }
   }
 }
 
@@ -112,7 +123,6 @@ async function executeRebalance(
       auditTrailUrl: job.auditTrailUrl,
     });
 
-    // Wait for the 3-step workflow to complete
     const completedJob = await keeperHub.waitForCompletion(job.jobId);
 
     if (completedJob.status === "CONFIRMED") {
@@ -129,10 +139,19 @@ async function executeRebalance(
       });
     }
   } catch (err) {
-    log.error("Failed to submit rebalance to KeeperHub", {
-      error: err instanceof Error ? err.message : String(err),
-      tokenId: position.tokenId,
-    });
+    if (axios.isAxiosError(err)) {
+      log.error("Failed to submit rebalance to KeeperHub", {
+        error: err.message,
+        status: err.response?.status,
+        details: JSON.stringify(err.response?.data),
+        tokenId: position.tokenId,
+      });
+    } else {
+      log.error("Failed to submit rebalance to KeeperHub", {
+        error: err instanceof Error ? err.message : String(err),
+        tokenId: position.tokenId,
+      });
+    }
   }
 }
 
@@ -141,15 +160,17 @@ async function executeRebalance(
 async function main(): Promise<void> {
   log.info("🛡️  SentinelLP starting up...");
   log.info(`Polling every ${POLL_INTERVAL_MINUTES} minute(s)`);
-  log.info(`Monitoring wallet: ${WALLET_ADDRESS}`);
 
-  // Run immediately on startup
+  // Show contract stats on startup
+  const rebalanceCount = await operatorReader.getRebalanceCount();
+  const fee = await operatorReader.getRebalanceFee();
+  log.info(`Contract: ${process.env.SENTINEL_OPERATOR_ADDRESS}`);
+  log.info(`Total rebalances executed: ${rebalanceCount}`);
+  log.info(`Rebalance fee: ${fee} ETH`);
+
   await runCycle();
 
-  // Then run on schedule
   const cronExpression = `*/${POLL_INTERVAL_MINUTES} * * * *`;
-  log.info(`Scheduling cron: ${cronExpression}`);
-
   cron.schedule(cronExpression, async () => {
     await runCycle();
   });

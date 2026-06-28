@@ -1,6 +1,5 @@
 // ============================================================
 // SentinelLP — Config
-// Loads .env, validates required fields, exports typed config
 // ============================================================
 
 import * as dotenv from "dotenv";
@@ -23,22 +22,26 @@ function optionalEnv(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
 
-// --- Ethereum RPC (read-only, for position monitoring) ---
+// --- Ethereum RPC ---
 export const ETH_RPC_URL = requireEnv("ETH_RPC_URL");
 
-// --- Wallet address we're monitoring (READ ONLY — KeeperHub Turnkey wallet executes) ---
+// --- Wallet ---
 export const WALLET_ADDRESS = requireEnv("WALLET_ADDRESS");
 
 // --- KeeperHub ---
-// API key: Settings > API Keys > Organisation tab > Create (kh_ prefix)
 export const KEEPERHUB_API_KEY = requireEnv("KEEPERHUB_API_KEY");
-// Wallet ID: get it by running `npm run get-wallet` or from Settings > Integrations
-export const KEEPERHUB_WALLET_ID = requireEnv("KEEPERHUB_WALLET_ID");
+export const KEEPERHUB_WALLET_ID = optionalEnv("KEEPERHUB_WALLET_ID", "");
 
 // --- Claude ---
 export const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
 
-// --- Uniswap v3 Contract Addresses (Ethereum Mainnet) ---
+// --- SentinelLP Operator Contract ---
+export const SENTINEL_OPERATOR_ADDRESS = optionalEnv(
+  "SENTINEL_OPERATOR_ADDRESS",
+  "0xd38Cc0d7dF6c3947BDA0F170bB4a9C5EC164BFf4"
+);
+
+// --- Uniswap v3 ---
 export const UNISWAP_POSITION_MANAGER = optionalEnv(
   "UNISWAP_POSITION_MANAGER",
   "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
@@ -60,8 +63,6 @@ export const MIN_POSITION_VALUE_USD = parseInt(
 );
 
 // --- Network ---
-// "11155111" = Sepolia testnet (start here)
-// "1" = Ethereum mainnet (switch for competition)
 export const TARGET_NETWORK = optionalEnv("TARGET_NETWORK", "11155111");
 
 // --- Logging ---
