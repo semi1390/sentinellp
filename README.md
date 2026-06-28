@@ -1,27 +1,75 @@
 # 🛡️ SentinelLP
 
-> Autonomous Uniswap v3 LP position risk agent powered by KeeperHub onchain execution.
+> **Autonomous Uniswap v3 LP rebalancer. Claude reasons. KeeperHub executes.**
 
-SentinelLP monitors your Uniswap v3 liquidity positions 24/7. When a position goes out of range (stops earning fees), Claude reasons about whether to rebalance — and if so, executes the 3-step workflow through KeeperHub with MEV protection, gas estimation, retry logic, and a full audit trail.
+SentinelLP is an AI agent that monitors your Uniswap v3 liquidity positions 24/7. When a position goes out of range and stops earning fees, Claude analyzes the economics and decides whether to rebalance. If it does, KeeperHub executes a 6-step onchain workflow — gas sponsored, MEV protected, with a full audit trail.
 
-Built for the **KeeperHub "Agents Onchain" hackathon** on DoraHacks (July 27 – August 13, 2026).
+**Built for the KeeperHub "Agents Onchain" Hackathon — DoraHacks 2026**
+
+---
+
+## 🔗 Verified Onchain Transactions (Sepolia)
+
+Full autonomous rebalance of position #229664 — all steps gas sponsored by KeeperHub:
+
+| Step | Transaction |
+|------|-------------|
+| Remove Liquidity | [0x601cd7f...](https://sepolia.etherscan.io/tx/0x601cd7f51a55bef1f1ec077d77fdccbd9c03d270b9e11a1cefabcf4aecfe321a) |
+| Collect Tokens & Fees | [0x5e60290...](https://sepolia.etherscan.io/tx/0x5e602908f09f8b23247bb936459c3334cc34450a8a10fdac79b802f9f133f022) |
+| Approve USDC | [0xeba74e7...](https://sepolia.etherscan.io/tx/0xeba74e7034fcfb24681e324460310142b7151d791a9620bcc16b7b0240f9cefc) |
+| Approve WETH | [0x622840...](https://sepolia.etherscan.io/tx/0x622840485d8e92caaad5c77f1de3d14fb48a82dd056ffc33cdeeb132a41fef79) |
+| Open New Position | [0xfdd341...](https://sepolia.etherscan.io/tx/0xfdd3415e6ccce93daad9663051db164c3ae51aaaa0789f9d3b62163cffe043ee) |
+
+**KeeperHub Audit Trail:** https://app.keeperhub.com/workflows/1zt1s7n5lf4ifrvda53mu/executions/km8am02t3yzg11xg7zatb
 
 ---
 
 ## How It Works
 
 ```
-Every N minutes:
-  1. Read LP positions from Uniswap v3 (NonfungiblePositionManager)
-  2. Check if currentTick is inside [tickLower, tickUpper]
-  3. If out of range: ask Claude to reason about the economics
-  4. If Claude says REBALANCE: submit 3-step workflow to KeeperHub
-       Step 1: decreaseLiquidity (remove from current range)
-       Step 2: collect (collect tokens + fees)
-       Step 3: mint (deposit at new centered range)
-  5. KeeperHub handles: gas, retries, MEV protection, audit trail
-  6. Record everything locally + link to KeeperHub audit trail
+Every 5 minutes:
+│
+├── 1. READ — ethers.js reads all Uniswap v3 LP positions from chain
+│
+├── 2. ASSESS — Is currentTick inside [tickLower, tickUpper]?
+│             — How long has it been out of range?
+│             — Is rebalancing worth the gas cost? (Chainlink price feeds)
+│
+├── 3. REASON — Claude (Haiku) gets real position data and decides:
+│             — HOLD: position is fine
+│             — WAIT: out of range but economics don't justify acting
+│             — REBALANCE: act now, here's the new tick range
+│
+├── 4. BUILD — KeeperHub Client creates a 6-step workflow via REST API:
+│             Step 1: decreaseLiquidity
+│             Step 2: collect
+│             Step 3: approve token0
+│             Step 4: approve token1
+│             Step 5: mint at new range
+│
+└── 5. EXECUTE — KeeperHub fires all transactions:
+              — Gas sponsored
+              — MEV protected (private mempool)
+              — Full audit trail per step
+              — Exponential backoff on failure
 ```
+
+---
+
+## KeeperHub Integration
+
+SentinelLP uses KeeperHub as its exclusive execution layer — not as a bolt-on, but as the core of what makes it reliable:
+
+| KeeperHub Feature | How SentinelLP Uses It |
+|---|---|
+| REST API (`/workflows/create`) | Programmatically builds the 6-step rebalance workflow |
+| REST API (`/workflow/{id}/execute`) | Triggers execution from the agent loop |
+| REST API (`/workflows/executions/{id}/status`) | Polls until confirmed or failed |
+| Gas sponsorship | All transactions gas sponsored — no ETH management needed |
+| Private mempool | MEV protection on LP operations (critical — bots watch these) |
+| Audit trail | Every step logged with tx hash, gas used, timestamp |
+| `web3/write-contract` | Calls decreaseLiquidity, collect, mint on NonfungiblePositionManager |
+| `web3/approve-token` | Token approvals before mint |
 
 ---
 
@@ -31,161 +79,138 @@ Every N minutes:
 sentinellp/
 ├── src/
 │   ├── types.ts                    # All shared TypeScript types
-│   ├── index.ts                    # Entry point
 │   ├── config/
-│   │   ├── index.ts                # Env var loader + typed config
-│   │   └── logger.ts               # Winston logger
+│   │   ├── index.ts                # Env var loader
+│   │   └── logger.ts               # Winston structured logging
 │   ├── uniswap/
-│   │   └── positionReader.ts       # Read-only chain queries
+│   │   ├── positionReader.ts       # Read-only chain queries (ethers.js)
+│   │   └── priceFeed.ts            # Chainlink price oracles (ETH/USD, USDC/USD)
 │   ├── agent/
-│   │   ├── healthAssessor.ts       # Position health logic
-│   │   ├── brain.ts                # Claude-powered decision making
+│   │   ├── healthAssessor.ts       # Position health + real gas cost estimation
+│   │   ├── brain.ts                # Claude Haiku reasoning engine
 │   │   ├── auditTrail.ts           # Local audit log (JSONL)
-│   │   └── loop.ts                 # Main monitoring loop
+│   │   └── loop.ts                 # Main monitoring loop (node-cron)
 │   ├── keeperhub/
-│   │   └── client.ts               # KeeperHub API wrapper
+│   │   └── client.ts               # KeeperHub REST API wrapper
 │   └── scripts/
-│       └── healthcheck.ts          # Pre-flight setup check
+│       ├── healthcheck.ts          # npm run check — pre-flight setup check
+│       ├── audit.ts                # npm run audit — decision history CLI
+│       └── get-wallet.ts           # npm run get-wallet — find KeeperHub wallet ID
 ├── logs/
 │   ├── sentinellp.log              # Structured log output
 │   └── audit.jsonl                 # Agent decision audit trail
-├── .env.example                    # Environment variable template
-├── .gitignore
-├── package.json
-├── tsconfig.json
+├── .env.example
 └── README.md
 ```
 
 ---
 
-## Setup
+## Quick Start
 
-### 1. Install dependencies
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/semi1390/sentinellp.git
+cd sentinellp
 npm install
 ```
 
-### 2. Configure environment
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env with your keys
 ```
 
-You need:
-- **Alchemy/Infura key** → `ETH_RPC_URL` (free tier works)
-- **Wallet private key** → `WALLET_PRIVATE_KEY` (use a fresh wallet for testing)
-- **KeeperHub API key** → Get at [keeperhub.io](https://keeperhub.io)
-- **Anthropic API key** → Get at [console.anthropic.com](https://console.anthropic.com)
+Fill in your `.env`:
 
-### 3. Run pre-flight checks
+```env
+# Ethereum RPC (free at alchemy.com)
+ETH_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
+
+# Your wallet address (holds the LP positions)
+WALLET_ADDRESS=0xYOUR_ADDRESS
+
+# KeeperHub (app.keeperhub.com → Settings → API Keys → Organisation)
+KEEPERHUB_API_KEY=kh_your_key
+
+# Claude (console.anthropic.com)
+ANTHROPIC_API_KEY=sk-ant-your_key
+
+# Network: 11155111 = Sepolia testnet, 1 = Ethereum mainnet
+TARGET_NETWORK=11155111
+```
+
+### 3. Pre-flight check
 
 ```bash
 npm run check
 ```
 
-This verifies every external dependency before you run the agent.
+All green? You're ready.
 
-### 4. Start the agent
+### 4. Open a Uniswap v3 LP position
+
+Go to [app.uniswap.org](https://app.uniswap.org) → Pool → New Position → select your pair → confirm.
+
+### 5. Run the agent
 
 ```bash
 npm run agent
 ```
 
----
+### 6. View audit trail
 
-## Key Concepts: Uniswap v3 Ticks (read once)
-
-Uniswap v3 uses "ticks" to represent prices. The math sounds scary but you only need to know:
-
-- Every LP position has a `tickLower` and `tickUpper` defining its price range
-- The pool has a `currentTick` representing the current price
-- **If `tickLower <= currentTick <= tickUpper` → IN RANGE → earning fees ✅**
-- **If `currentTick < tickLower` or `currentTick > tickUpper` → OUT OF RANGE → earning nothing ❌**
-- Ticks are just `log(price) / log(1.0001)` — the exact math is handled by the contracts
-
-That's all SentinelLP needs to know to decide when to act.
-
----
-
-## KeeperHub Integration
-
-KeeperHub handles everything after the decision is made:
-
-| KeeperHub Feature | How SentinelLP Uses It |
-|---|---|
-| Workflow builder | Chains the 3-step rebalance (decrease → collect → mint) |
-| Gas estimation | Estimates rebalance cost to check if it's worth it |
-| Exponential backoff | Retries if a step fails at the wrong moment |
-| Private routing | MEV protection on LP operations (critical — bots watch these) |
-| Audit trail | Proof of execution for demo + user trust |
-| x402 / MPP | Pay-per-execution billing |
-
----
-
-## Build Roadmap
-
-### Week 1 (July 27 – Aug 2): Foundation
-- [ ] KeeperHub API key → fill in real endpoints in `src/keeperhub/client.ts`
-- [ ] Run `npm run check` → all green
-- [ ] Deploy a real test LP position on mainnet
-- [ ] Agent reads the position correctly
-- [ ] First rebalance workflow submitted to KeeperHub
-- [ ] **Milestone: Link a real transaction the agent executed**
-
-### Week 2 (Aug 3 – 9): Reliability + Observability
-- [ ] Real gas cost from KeeperHub (replace $15 placeholder)
-- [ ] Real USD values from Chainlink price feeds
-- [ ] Real fee APR from Uniswap subgraph
-- [ ] Slippage protection on mint/decrease params
-- [ ] `COLLECT_FEES` workflow
-- [ ] React dashboard (optional but good for demo video)
-
-### Week 2.5 (Aug 10 – 13): Polish + Submission
-- [ ] Record demo video
-- [ ] Collect 3+ real transactions for the submission link
-- [ ] Clean up README for judges
-- [ ] Submit on DoraHacks before August 13
-
----
-
-## Code Review Prompt
-
-When reviewing this codebase with Claude, paste this first:
-
-```
-You are a senior Ethereum DeFi engineer reviewing SentinelLP,
-a Uniswap v3 LP monitoring agent that executes rebalances via KeeperHub.
-
-Review focus areas:
-1. Correctness: Are the Uniswap v3 position reads accurate?
-2. Safety: Are there any footguns in the rebalance workflow params?
-3. Reliability: Will the agent handle RPC failures, gas spikes, and KeeperHub errors gracefully?
-4. KeeperHub usage: Are we using KeeperHub's surfaces well (MCP, workflow, audit)?
-5. Hackathon angle: What would a judge think is missing?
-
-Be specific. Point to file names and line numbers. Don't be nice — be useful.
+```bash
+npm run audit
 ```
 
 ---
 
-## Hackathon Submission Checklist
+## Agent Output Example
 
-- [ ] GitHub repo (public)
-- [ ] Demo video showing agent detecting out-of-range position and rebalancing
-- [ ] Link to actual transaction the agent executed (Etherscan)
-- [ ] Link to KeeperHub audit trail for that transaction
-- [ ] README explains the KeeperHub integration clearly
+```
+[info] Chainlink ETH/USD: $2,847.32
+[info] ─── Checking position 229664 (USDC/WETH) ───
+[warn] Position 229664 out of range
+      currentTick: 180109, range: [179800, 181000]
+[info] Rebalance economics
+      estimatedDailyFeeLossUSD: $3.18
+      gasCostUSD: $1.62
+      rebalanceWorthIt: true
+[info] Agent decided: REBALANCE (HIGH confidence)
+      "Position losing $3.18/day vs $1.62 gas cost.
+       Recentering around tick 180109 will restore fee generation."
+[info] Workflow created: wf_abc123
+[info] Execution started: exec_xyz789
+[info] ✅ Rebalance confirmed onchain
+[info] 🔗 https://sepolia.etherscan.io/tx/0xfdd341...
+```
 
 ---
 
 ## Tech Stack
 
-- **Runtime**: Node.js 18+, TypeScript
-- **Chain reads**: ethers.js v6
-- **Agent brain**: Claude claude-sonnet-4-6 via Anthropic SDK
-- **Execution layer**: KeeperHub (MCP + workflow builder + audit trail)
-- **Scheduling**: node-cron
-- **Logging**: Winston
-- **Target network**: Ethereum Mainnet
+| Layer | Technology |
+|---|---|
+| Agent loop | TypeScript / Node.js / node-cron |
+| Chain reads | ethers.js v6 |
+| Price feeds | Chainlink (ETH/USD, USDC/USD) |
+| AI reasoning | Claude Haiku (Anthropic) |
+| Onchain execution | KeeperHub (workflow builder + REST API) |
+| Target protocol | Uniswap v3 (NonfungiblePositionManager) |
+| Network | Ethereum Mainnet / Sepolia |
+
+---
+
+## Hackathon Submission
+
+**GitHub:** https://github.com/semi1390/sentinellp
+
+**Transaction proof:** Position #229664 fully rebalanced onchain via KeeperHub
+- All 5 transactions gas sponsored
+- Full KeeperHub audit trail available
+- Agent made 28 decisions over 2 days of testing
+
+**KeeperHub surfaces used:** REST API (workflow create, execute, poll, logs), `web3/write-contract`, `web3/approve-token`, gas sponsorship, private mempool, audit trail
+
+---
