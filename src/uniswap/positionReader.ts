@@ -18,6 +18,7 @@ import { UniswapV3Position, TokenInfo } from "../types";
 import { ETH_RPC_URL, UNISWAP_POSITION_MANAGER, UNISWAP_FACTORY } from "../config";
 import { log } from "../config/logger";
 import { priceFeed } from "./priceFeed";
+import { getPositionAmounts } from "./tickMath";
 
 // Minimal ABI — only the functions we actually call
 const POSITION_MANAGER_ABI = [
@@ -150,6 +151,30 @@ export class UniswapPositionReader {
       inRange: currentTick >= Number(pos.tickLower) && currentTick <= Number(pos.tickUpper),
     });
 
+    // Calculate real token amounts using tick math
+    const { amount0, amount1 } = getPositionAmounts(
+      pos.liquidity,
+      currentTick,
+      Number(pos.tickLower),
+      Number(pos.tickUpper)
+    );
+
+    // Calculate real USD value: position amounts + uncollected fees
+    const totalAmount0 = amount0 + pos.tokensOwed0;
+    const totalAmount1 = amount1 + pos.tokensOwed1;
+
+    const value0 = (Number(totalAmount0) / Math.pow(10, token0Info.decimals)) * token0Info.priceUSD;
+    const value1 = (Number(totalAmount1) / Math.pow(10, token1Info.decimals)) * token1Info.priceUSD;
+    const valueUSD = value0 + value1;
+
+    log.debug(`Position ${tokenId} value calculation`, {
+      amount0: totalAmount0.toString(),
+      amount1: totalAmount1.toString(),
+      price0: token0Info.priceUSD,
+      price1: token1Info.priceUSD,
+      valueUSD: valueUSD.toFixed(2),
+    });
+
     return {
       tokenId,
       token0: token0Info,
@@ -158,14 +183,11 @@ export class UniswapPositionReader {
       tickLower: Number(pos.tickLower),
       tickUpper: Number(pos.tickUpper),
       liquidity: pos.liquidity.toString(),
-      // NOTE: Exact token amounts require sqrt price math (Week 2 full implementation)
-      // For now we estimate value from liquidity and current prices
-      amount0: "0",
-      amount1: "0",
+      amount0: amount0.toString(),
+      amount1: amount1.toString(),
       feesEarned0: pos.tokensOwed0.toString(),
       feesEarned1: pos.tokensOwed1.toString(),
-   valueUSD: (token0Info.priceUSD * Number(pos.tokensOwed0) / Math.pow(10, token0Info.decimals)) +
-                (token1Info.priceUSD * Number(pos.tokensOwed1) / Math.pow(10, token1Info.decimals)),
+      valueUSD,
     };
   }
 
