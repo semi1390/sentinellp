@@ -13,9 +13,10 @@ import { AgentBrain } from "./brain";
 import { KeeperHubClient } from "../keeperhub/client";
 import { AuditTrail } from "./auditTrail";
 import { operatorReader } from "../contract/operatorReader";
-import { WALLET_ADDRESS, POLL_INTERVAL_MINUTES } from "../config";
+import { WALLET_ADDRESS, POLL_INTERVAL_MINUTES, TARGET_NETWORK } from "../config";
 import { log } from "../config/logger";
 import axios from "axios";
+import { notifyRebalance, pollTelegramUpdates } from "../telegram/client";
 
 const positionReader = new UniswapPositionReader();
 const healthAssessor = new HealthAssessor();
@@ -98,7 +99,7 @@ async function monitorWallet(walletAddress: string): Promise<void> {
     });
 
     if (decision.action === "REBALANCE") {
-      await executeRebalance(position, decision);
+      await executeRebalance(position, decision, walletAddress);
       healthAssessor.resetCounter(position.tokenId);
     } else if (decision.action === "COLLECT_FEES") {
       log.info(`Fee collection — coming soon`);
@@ -110,7 +111,8 @@ async function monitorWallet(walletAddress: string): Promise<void> {
 
 async function executeRebalance(
   position: Parameters<typeof keeperHub.submitRebalance>[0],
-  decision: Parameters<typeof keeperHub.submitRebalance>[1]
+  decision: Parameters<typeof keeperHub.submitRebalance>[1],
+  walletAddress: string
 ): Promise<void> {
   log.info(`Submitting rebalance to KeeperHub for position ${position.tokenId}`);
 
@@ -131,6 +133,15 @@ async function executeRebalance(
         txHash: completedJob.txHash,
         gasUsed: completedJob.gasUsed,
       });
+
+      // Notify Telegram subscribers
+      await notifyRebalance(
+        walletAddress,
+        position.tokenId,
+        decision.reasoning,
+        completedJob.txHash,
+        TARGET_NETWORK
+      );
     } else {
       audit.recordExecutionFailed(completedJob);
       log.error(`Rebalance failed ❌`, {
@@ -174,6 +185,16 @@ async function main(): Promise<void> {
   cron.schedule(cronExpression, async () => {
     await runCycle();
   });
+
+  // Poll Telegram for new /start subscriptions every 5 seconds
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    log.info("Telegram bot polling enabled");
+    setInterval(() => {
+      pollTelegramUpdates().catch(() => {});
+    }, 5000);
+  } else {
+    log.info("Telegram bot not configured (set TELEGRAM_BOT_TOKEN to enable)");
+  }
 
   log.info("Agent is running. Press Ctrl+C to stop.");
 }
